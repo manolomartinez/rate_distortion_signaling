@@ -9,7 +9,6 @@ class RDT:
     """
     def __init__(self, distribution, a=3, b=3, K=10, epsilon=0.001):
         self.dist_vec = np.vectorize(self.distortion)
-        self.A_vec = np.vectorize(self.calc_A)
         # I am not sure where np.vectorize statements such as these should go.
         # At the top of __init__ for now :/
         self.K = K
@@ -21,8 +20,6 @@ class RDT:
         self.b = b
         self.s = np.array([self.calc_s(k) for k in range(K)])
         self.dist_matrix = self.calc_dist_matrix()
-        self.A = np.fromfunction(self.A_vec, (self.K, self.m, self.m),
-                                 dtype=int)
 
     def all_points(self):
         """
@@ -35,6 +32,8 @@ class RDT:
         Calculate the algorithm for one value of k
         """
         self.init_q()
+        self.A_vec = np.vectorize(lambda i, j: self.calc_A(k, i, j))
+        self.A = np.fromfunction(self.A_vec, (self.m, self.m), dtype=int)
         Tu, Tl = self.blahut_step(k)
         while Tu - Tl >= self.epsilon:
             # print("{} >= {}".format(Tu - Tl, self.epsilon))
@@ -52,8 +51,8 @@ class RDT:
         """
         Calculate one step of the algorithm for a certain value of k
         """
-        alpha = self.calc_alpha(k)
-        c = self.calc_c(k, alpha)
+        alpha = self.calc_alpha()
+        c = self.calc_c(alpha)
         self.q = self.q * c
         logc = np.log2(c)
         Tu = -1 * np.einsum('i,i', self.q, logc)
@@ -64,8 +63,8 @@ class RDT:
         """
         The final steps
         """
-        alpha = self.calc_alpha(k)
-        self.Q_vec = np.vectorize(lambda i, j: self.calc_Q(k, alpha, i, j))
+        alpha = self.calc_alpha()
+        self.Q_vec = np.vectorize(lambda i, j: self.calc_Q(alpha, i, j))
         Q = np.fromfunction(self.Q_vec, (self.m, self.m), dtype=int)
         Qtimesd = np.einsum('...j, ...j', Q, self.dist_matrix)
         D = np.einsum('i, i', self.pmf, Qtimesd)
@@ -90,12 +89,12 @@ class RDT:
     def calc_A(self, k, i, j):
         return np.exp(self.s[k] * self.dist_matrix[i, j])
 
-    def calc_alpha(self, k):
-        return np.einsum('j, ij', self.q, self.A[k, :, :])
+    def calc_alpha(self):
+        return np.einsum('j, ij', self.q, self.A)
 
-    def calc_c(self, k, alpha):
+    def calc_c(self, alpha):
         p_over_alpha = self.pmf / alpha
-        return np.einsum('i, ij', p_over_alpha, self.A[k, :, :])
+        return np.einsum('i, ij', p_over_alpha, self.A)
 
-    def calc_Q(self, k, alpha, i, j):
-        return self.A[k, i, j] * self.q[j] / alpha[i]
+    def calc_Q(self, alpha, i, j):
+        return self.A[i, j] * self.q[j] / alpha[i]
