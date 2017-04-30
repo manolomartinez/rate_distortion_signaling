@@ -21,16 +21,22 @@ class RDT:
         self.s = np.array([self.calc_s(k) for k in range(K)])
         self.dist_matrix = self.calc_dist_matrix()
 
-    def all_points(self):
+    def all_points(self, iterator=None, outputfile=None):
         """
-        Calculate the R(D) function for as many points as given by K
+        Calculate the R(D) function for as many points as given by <iterator>
+        (all of them by default)
+        Save them to <file>. Each line of the file (row of the array) is [K,
+        distortion, rate]
         """
-        return np.array([self.blahut(k) for k in range(self.K)]).T
+        if not iterator:
+            iterator = range(self.K)
+        return np.array([self.blahut(k, outputfile) for k in iterator]).T
 
-    def blahut(self, k):
+    def blahut(self, k, outputfile):
         """
         Calculate the algorithm for one value of k
         """
+        print(k)
         self.init_q()
         self.A_vec = np.vectorize(lambda i, j: self.calc_A(k, i, j))
         self.A = np.fromfunction(self.A_vec, (self.m, self.m), dtype=int)
@@ -39,7 +45,11 @@ class RDT:
             # print("{} >= {}".format(Tu - Tl, self.epsilon))
             Tu, Tl = self.blahut_step(k)
         D, RD_prov = self.blahut_wrapup(k)
-        return D, RD_prov + (Tu + Tl) / 2
+        RD_prov_final = RD_prov + (Tu + Tl) / 2
+        if outputfile:
+            with open(outputfile, "a") as outf:
+                outf.write("{}\t{}\t{}\n".format(k, D, RD_prov_final))
+        return D, RD_prov_final
 
     def init_q(self):
         """
@@ -98,3 +108,42 @@ class RDT:
 
     def calc_Q(self, alpha, i, j):
         return self.A[i, j] * self.q[j] / alpha[i]
+
+
+    def BlahutArimato(self, K) :
+        """Compute the rate-distortion function of an i.i.d distribution
+        Inputs :
+            'dist_mat' -- (numpy matrix) representing the distoriton matrix between the input 
+                alphabet and the reconstruction alphabet. dist_mat[i,j] = dist(x[i],x_hat[j])
+            'p_x' -- (1D numpy array) representing the probability mass function of the source
+            'beta' -- (scalar) the slope of the rate-distoriton function at the point where evaluation is 
+                        required
+            'max_it' -- (int) maximal number of iterations
+            'eps' -- (float) accuracy required by the algorithm: the algorithm stops if there
+                    is no change in distoriton value of more than 'eps' between consequtive iterations
+        Returns :
+            'Iu' -- rate (in bits)
+            'Du' -- distortion
+        """
+
+        l, l_hat = self.dist_matrix.shape
+        # We start with iid conditional distribution
+        p_cond = np.tile(self.pmf, (l_hat, 1)).T
+
+        p_cond /= np.sum(p_cond, 1, keepdims=True)
+
+        Du_prev = 0
+        Du = 2 * self.epsilon
+        beta = self.calc_s(K)
+        while np.abs(Du-Du_prev) > self.epsilon:
+            Du_prev = Du
+            p_hat = np.matmul(self.pmf, p_cond)
+
+            p_cond = np.exp(beta * self.dist_matrix) * p_hat
+            p_cond /= np.expand_dims(np.sum(p_cond, 1), 1)
+
+            Iu = np.matmul(self.pmf, p_cond*np.log(p_cond /
+                                                   np.expand_dims(p_hat,
+                                                                  0))).sum()
+            Du = np.matmul(self.pmf, (p_cond * self.dist_matrix)).sum()
+        return Iu/np.log(2), Du
