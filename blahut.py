@@ -30,57 +30,8 @@ class RDT:
         """
         if not iterator:
             iterator = range(self.K)
-        return np.array([self.blahut(k, outputfile) for k in iterator]).T
-
-    def blahut(self, k, outputfile):
-        """
-        Calculate the algorithm for one value of k
-        """
-        print(k)
-        self.init_q()
-        self.A_vec = np.vectorize(lambda i, j: self.calc_A(k, i, j))
-        self.A = np.fromfunction(self.A_vec, (self.m, self.m), dtype=int)
-        Tu, Tl = self.blahut_step(k)
-        while Tu - Tl >= self.epsilon:
-            # print("{} >= {}".format(Tu - Tl, self.epsilon))
-            Tu, Tl = self.blahut_step(k)
-        D, RD_prov = self.blahut_wrapup(k)
-        RD_prov_final = RD_prov + (Tu + Tl) / 2
-        if outputfile:
-            with open(outputfile, "a") as outf:
-                outf.write("{}\t{}\t{}\n".format(k, D, RD_prov_final))
-        return D, RD_prov_final
-
-    def init_q(self):
-        """
-        Initialize q
-        """
-        self.q = np.array([1/self.m] * self.m)
-
-    def blahut_step(self, k):
-        """
-        Calculate one step of the algorithm for a certain value of k
-        """
-        alpha = self.calc_alpha()
-        c = self.calc_c(alpha)
-        self.q = self.q * c
-        logc = np.log2(c)
-        Tu = -1 * np.einsum('i,i', self.q, logc)
-        Tl = -1 * np.max(logc)
-        return Tu, Tl
-
-    def blahut_wrapup(self, k):
-        """
-        The final steps
-        """
-        alpha = self.calc_alpha()
-        self.Q_vec = np.vectorize(lambda i, j: self.calc_Q(alpha, i, j))
-        Q = np.fromfunction(self.Q_vec, (self.m, self.m), dtype=int)
-        Qtimesd = np.einsum('...j, ...j', Q, self.dist_matrix)
-        D = np.einsum('i, i', self.pmf, Qtimesd)
-        RD_prov = self.s[k] * D - np.einsum('i, i', self.pmf, np.log2(alpha))
-        # This is R(D) minus the (Tu + Tl)/2 correction
-        return D, RD_prov
+        return np.array([self.blahut(k, outputfile) for k in
+                         iterator]).T
 
     def distortion(self, i, j):
         """
@@ -96,54 +47,51 @@ class RDT:
     def calc_s(self, k):
         return -self.a * np.exp(-self.b * k)
 
-    def calc_A(self, k, i, j):
-        return np.exp(self.s[k] * self.dist_matrix[i, j])
-
-    def calc_alpha(self):
-        return np.einsum('j, ij', self.q, self.A)
-
-    def calc_c(self, alpha):
-        p_over_alpha = self.pmf / alpha
-        return np.einsum('i, ij', p_over_alpha, self.A)
-
-    def calc_Q(self, alpha, i, j):
-        return self.A[i, j] * self.q[j] / alpha[i]
-
-
-    def BlahutArimato(self, K) :
-        """Compute the rate-distortion function of an i.i.d distribution
-        Inputs :
-            'dist_mat' -- (numpy matrix) representing the distoriton matrix between the input 
-                alphabet and the reconstruction alphabet. dist_mat[i,j] = dist(x[i],x_hat[j])
-            'p_x' -- (1D numpy array) representing the probability mass function of the source
-            'beta' -- (scalar) the slope of the rate-distoriton function at the point where evaluation is 
-                        required
-            'max_it' -- (int) maximal number of iterations
-            'eps' -- (float) accuracy required by the algorithm: the algorithm stops if there
-                    is no change in distoriton value of more than 'eps' between consequtive iterations
-        Returns :
-            'Iu' -- rate (in bits)
-            'Du' -- distortion
+    def blahut(self, k, outputfile):
         """
+        Calculate the point in the R(D)-D curve with slope given by
+        self.calc_s(<k>). Follows Cover & Thomas 2006, p. 334
+        """
+        s = self.calc_s(k)
+        # we start with the uniform output distribution
+        output = np.ones(self.m) / self.m
+        cond = self.update_conditional(s, output)
+        distortion = self.calc_distortion(cond)
+        rate = self.calc_rate(cond, output)
+        delta_dist = 2 * self.epsilon
+        while delta_dist > self.epsilon:
+            output = self.pmf @ cond
+            cond = self.update_conditional(s, output)
+            new_distortion = self.calc_distortion(cond)
+            rate = self.calc_rate(cond, output)
+            delta_dist = np.abs(new_distortion - distortion)
+            distortion = new_distortion
+        if outputfile:
+            with open(outputfile, "a") as outf:
+                outf.write("{}\t{}\t{}\n".format(k, rate, new_distortion))
+        return rate, new_distortion
 
-        l, l_hat = self.dist_matrix.shape
-        # We start with iid conditional distribution
-        p_cond = np.tile(self.pmf, (l_hat, 1)).T
+    def update_conditional(self, s, output):
+        """
+        Calculate a new conditional distribution from the <output> distribution
+        and the <s> parameter.  The conditional probability matrix is such that
+        cond[i, j] corresponds to P(x^_j | x_i)
+        """
+        cond = output * np.exp(s * self.dist_matrix)
+        cond = cond / cond.sum(1)[:, np.newaxis]  # normalizel
+        return cond
 
-        p_cond /= np.sum(p_cond, 1, keepdims=True)
+    def calc_distortion(self, cond):
+        """
+        Calculate the distortion for a given channel (individuated by the
+        conditional matrix in <cond>
+        """
+        # return np.sum(self.pmf @ (cond * self.dist_matrix))
+        return np.matmul(self.pmf, (cond * self.dist_matrix)).sum()
 
-        Du_prev = 0
-        Du = 2 * self.epsilon
-        beta = self.calc_s(K)
-        while np.abs(Du-Du_prev) > self.epsilon:
-            Du_prev = Du
-            p_hat = np.matmul(self.pmf, p_cond)
-
-            p_cond = np.exp(beta * self.dist_matrix) * p_hat
-            p_cond /= np.expand_dims(np.sum(p_cond, 1), 1)
-
-            Iu = np.matmul(self.pmf, p_cond*np.log(p_cond /
-                                                   np.expand_dims(p_hat,
-                                                                  0))).sum()
-            Du = np.matmul(self.pmf, (p_cond * self.dist_matrix)).sum()
-        return Iu/np.log(2), Du
+    def calc_rate(self, cond, output):
+        """
+        Calculate the rate for a channel (given by <cond>) and output
+        distribution (given by <output>)
+        """
+        return np.sum(self.pmf @ (cond * np.log2(cond / output)))
